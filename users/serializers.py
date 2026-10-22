@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User
+from .models import User, Client
 # 1. User Serializer
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -80,7 +80,30 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'emergency_contact_relationship',
             'status',
         ]
-# 4. Login Serializer
+# 4. Client Serializer
+class ClientSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.ReadOnlyField(source='created_by.username')
+    modified_by_name = serializers.ReadOnlyField(source='modified_by.username')
+    class Meta:
+        model = Client
+        fields = [
+            'id',
+            'first_name',
+            'last_name',
+            'address',
+            'country',
+            'contact_no',
+            'email_id',
+            'status',
+            'created_at',
+            'updated_at',
+            'created_by',
+            'modified_by',
+            'created_by_name',
+            'modified_by_name',
+        ]
+        read_only_fields = ['created_by', 'modified_by', 'created_at', 'updated_at']
+# 5. Login Serializer
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
@@ -111,12 +134,14 @@ class LoginSerializer(serializers.Serializer):
             'refresh': str(refresh),
             'access': str(refresh.access_token),
         }
-# 5. Send OTP Serializer
+# 6. Send OTP Serializer
 class SendOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
+# 7. Verify OTP Serializer
 class VerifyOTPSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(min_length=6, max_length=6)
+# 8. Reset Password Serializer
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(min_length=6, max_length=6)

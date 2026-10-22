@@ -6,8 +6,10 @@ from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import AllowAny
-from .models import User
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from .models import User, Client
 from .serializers import (
     LoginSerializer,
     SendOTPSerializer,
@@ -16,17 +18,27 @@ from .serializers import (
     UserUpdateSerializer,
     VerifyOTPSerializer,
     ResetPasswordSerializer,
+    ClientSerializer,
 )
-# 1. List and Create Users
+# 1 Client Pagination
+class ClientPagination(PageNumberPagination):
+    page_size = 3
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+# 2. List and Create Users 
 class UserListCreateAPIView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = UserCreateSerializer
     def get(self, request):
-        users = User.objects.filter(status='Active')
+        users = User.objects.filter(status='Active').order_by('id')
+        paginator = ClientPagination()
+        paginated_users = paginator.paginate_queryset(users, request)
         serializer = UserSerializer(
-            users,
+            paginated_users,
             many=True,
             context={'request': request}
         )
-        return Response(serializer.data)
+        return paginator.get_paginated_response(serializer.data)
     def post(self, request):
         serializer = UserCreateSerializer(
             data=request.data,
@@ -53,8 +65,10 @@ class UserListCreateAPIView(APIView):
             response_serializer.data,
             status=status.HTTP_201_CREATED
         )
-# 2. Retrieve, Update and Soft Delete User
+# 3. Retrieve, Update and Soft Delete User 
 class UserDetailAPIView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = UserUpdateSerializer
     def get(self, request, pk):
         user = get_object_or_404(
             User,
@@ -105,9 +119,10 @@ class UserDetailAPIView(APIView):
             {'message': 'User deactivated successfully.'},
             status=status.HTTP_200_OK
         )
-# 3. Login with JWT
+# 4. Login with JWT
 class LoginAPIView(APIView):
     permission_classes = [AllowAny]
+    serializer_class = LoginSerializer
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -115,9 +130,10 @@ class LoginAPIView(APIView):
             serializer.validated_data,
             status=status.HTTP_200_OK
         )
-# 4. Send Verification OTP
+# 5. Send Verification OTP
 class SendOTPAPIView(APIView):
     permission_classes = [AllowAny]
+    serializer_class = SendOTPSerializer
     def post(self, request):
         serializer = SendOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -134,12 +150,12 @@ class SendOTPAPIView(APIView):
             )
         otp = f'{secrets.randbelow(1000000):06d}'
         user.otp = otp
-        user.otp_purpose = 'verification'
+        user.is_otp_used = False
         user.otp_expires_at = timezone.now() + timedelta(minutes=5)
         user.save(
             update_fields=[
                 'otp',
-                'otp_purpose',
+                'is_otp_used',
                 'otp_expires_at'
             ]
         )
@@ -154,9 +170,10 @@ class SendOTPAPIView(APIView):
             {'message': 'OTP sent successfully.'},
             status=status.HTTP_200_OK
         )
-# 5. Verify OTP
+# 6. Verify OTP 
 class VerifyOTPAPIView(APIView):
     permission_classes = [AllowAny]
+    serializer_class = VerifyOTPSerializer
     def post(self, request):
         serializer = VerifyOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -174,7 +191,7 @@ class VerifyOTPAPIView(APIView):
             )
         if (
             user.otp != otp
-            or user.otp_purpose != 'verification'
+            or getattr(user, 'is_otp_used', False) is True
             or user.otp_expires_at is None
             or user.otp_expires_at <= timezone.now()
         ):
@@ -182,13 +199,13 @@ class VerifyOTPAPIView(APIView):
                 {'message': 'Invalid or expired OTP.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        user.is_otp_used = True
         user.otp = ''
-        user.otp_purpose = ''
         user.otp_expires_at = None
         user.save(
             update_fields=[
                 'otp',
-                'otp_purpose',
+                'is_otp_used',
                 'otp_expires_at'
             ]
         )
@@ -196,9 +213,10 @@ class VerifyOTPAPIView(APIView):
             {'message': 'OTP verified successfully.'},
             status=status.HTTP_200_OK
         )
-# 6. Forgot Password
+# 7. Forgot Password 
 class ForgotPasswordAPIView(APIView):
     permission_classes = [AllowAny]
+    serializer_class = SendOTPSerializer
     def post(self, request):
         serializer = SendOTPSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -215,12 +233,12 @@ class ForgotPasswordAPIView(APIView):
             )
         otp = f'{secrets.randbelow(1000000):06d}'
         user.otp = otp
-        user.otp_purpose = 'password_reset'
+        user.is_otp_used = False
         user.otp_expires_at = timezone.now() + timedelta(minutes=5)
         user.save(
             update_fields=[
                 'otp',
-                'otp_purpose',
+                'is_otp_used',
                 'otp_expires_at'
             ]
         )
@@ -241,9 +259,10 @@ class ForgotPasswordAPIView(APIView):
             {'message': 'Password reset OTP sent successfully.'},
             status=status.HTTP_200_OK
         )
-# 7. Reset Password
+# 8. Reset Password 
 class ResetPasswordAPIView(APIView):
     permission_classes = [AllowAny]
+    serializer_class = ResetPasswordSerializer
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -262,7 +281,7 @@ class ResetPasswordAPIView(APIView):
             )
         if (
             user.otp != otp
-            or user.otp_purpose != 'password_reset'
+            or getattr(user, 'is_otp_used', False) is True
             or user.otp_expires_at is None
             or user.otp_expires_at <= timezone.now()
         ):
@@ -271,11 +290,78 @@ class ResetPasswordAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         user.set_password(new_password)
+        user.is_otp_used = True
         user.otp = ''
-        user.otp_purpose = ''
         user.otp_expires_at = None
         user.save()
         return Response(
             {'message': 'Password reset successfully.'},
+            status=status.HTTP_200_OK
+        )
+# 9. Client List and Create API 
+class ClientListCreateAPIView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = ClientSerializer
+    def get(self, request):
+        clients = Client.objects.filter(status='Active').order_by('created_at')
+        paginator = ClientPagination()
+        paginated_clients = paginator.paginate_queryset(clients, request)
+        serializer = ClientSerializer(
+            paginated_clients,
+            many=True,
+            context={'request': request}
+        )
+        return paginator.get_paginated_response(serializer.data)
+    def post(self, request):
+        serializer = ClientSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = request.user if request.user.is_authenticated else None
+        serializer.save(created_by=user, modified_by=user)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+# 10. Client Detail Update and Soft Delete API 
+class ClientDetailAPIView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+    serializer_class = ClientSerializer
+    def get(self, request, pk):
+        client = get_object_or_404(Client, pk=pk, status='Active')
+        serializer = ClientSerializer(
+            client,
+            context={'request': request}
+        )
+        return Response(serializer.data)
+    def put(self, request, pk):
+        client = get_object_or_404(Client, pk=pk)
+        serializer = ClientSerializer(
+            client,
+            data=request.data,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = request.user if request.user.is_authenticated else None
+        serializer.save(modified_by=user)
+        return Response(serializer.data)
+    def patch(self, request, pk):
+        client = get_object_or_404(Client, pk=pk)
+        serializer = ClientSerializer(
+            client,
+            data=request.data,
+            partial=True,
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        user = request.user if request.user.is_authenticated else None
+        serializer.save(modified_by=user)
+        return Response(serializer.data)
+    def delete(self, request, pk):
+        client = get_object_or_404(Client, pk=pk)
+        client.status = 'Inactive'
+        client.save(update_fields=['status'])
+        return Response(
+            {'message': 'Client deactivated successfully.'},
             status=status.HTTP_200_OK
         )
